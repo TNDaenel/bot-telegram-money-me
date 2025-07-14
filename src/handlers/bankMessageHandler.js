@@ -1,13 +1,24 @@
 
+const { PrismaClient } = require('@prisma/client');
 const BankService = require('../services/bankService');
 const languageService = require('../services/languageService');
 
+const bankDomains = {
+  VIB: 'vib.com.vn',
+  CAKE: 'no-reply@cake.vn',
+  VPBank: ['vpbankonline@vpb.com.vn', 'customercare@care.vpb.com.vn'],
+  ACB: 'mailalert@acb.com.vn'
+};
+
 class BankMessageHandler {
   constructor() {
+    this.prisma = new PrismaClient();
     this.bankService = new BankService();
+    this.waitingForEmail = new Map(); // userId -> true
+    this.pendingEmail = new Map(); // userId -> email
   }
 
-  // Xử lý tin nhắn bank
+  // Handle bank messages
   async handleBankMessage(ctx) {
     const text = ctx.message.text.toLowerCase();
     const userId = String(ctx.from.id);
@@ -39,10 +50,6 @@ class BankMessageHandler {
         return await this.showPendingTransactions(ctx);
       }
 
-      if (text.includes('ai') || text.includes('retrain')) {
-        return await this.retrainAI(ctx);
-      }
-
       if (text.includes('force') || text.includes('check') || text.includes('kiểm tra ngay')) {
         return await this.forceCheckEmails(ctx);
       }
@@ -51,11 +58,7 @@ class BankMessageHandler {
         return await this.showMonitoringStatus(ctx);
       }
 
-      if (text.includes('restart') || text.includes('khởi động lại')) {
-        return await this.restartMonitoring(ctx);
-      }
-
-      // Mặc định hiển thị menu bank
+      // Default to bank menu
       return await this.showBankMenu(ctx);
 
     } catch (error) {
@@ -64,90 +67,154 @@ class BankMessageHandler {
     }
   }
 
-  // Hiển thị menu bank
+  // Handle connect email flow
+  async handleConnectEmail(ctx) {
+    const userId = String(ctx.from.id);
+    this.waitingForEmail.set(userId, true);
+    await ctx.reply(
+      '🔗 *Kết nối Email Ngân hàng*\n\n' +
+      '1️⃣ Vui lòng nhập email bạn dùng để nhận thông báo giao dịch từ ngân hàng (ví dụ: yourmail@gmail.com).\n\n' +
+      '2️⃣ Sau đó, chọn ngân hàng bạn muốn kết nối.\n\n' +
+      '⛔ Bạn có thể nhấn "Huỷ" bất cứ lúc nào.',
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '❌ Huỷ', callback_data: 'bank_cancel_connect' }
+            ]
+          ]
+        }
+      }
+    );
+  }
+
+  async handleText(ctx) {
+    const userId = String(ctx.from.id);
+    const text = ctx.message.text;
+    if (this.waitingForEmail.get(userId) && this.isValidEmail(text)) {
+      this.pendingEmail.set(userId, text);
+      this.waitingForEmail.delete(userId);
+      // Gửi prompt chọn ngân hàng
+      await ctx.reply('🏦 *Chọn ngân hàng bạn muốn kết nối:*', {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '💚 VIB', callback_data: 'bank_VIB' },
+              { text: '🍰 CAKE', callback_data: 'bank_CAKE' }
+            ],
+            [
+              { text: '💳 VPBank', callback_data: 'bank_VPBank' },
+              { text: '🏦 ACB', callback_data: 'bank_ACB' }
+            ],
+            [
+              { text: '❌ Huỷ', callback_data: 'bank_cancel_connect' } ]
+          ]
+        }
+      });
+      return true;
+    }
+    return false;
+  }
+
+  async handleBankSelect(ctx) {
+    const userId = String(ctx.from.id);
+    const data = ctx.callbackQuery.data;
+    if (data === 'bank_cancel_connect') {
+      this.waitingForEmail.delete(userId);
+      this.pendingEmail.delete(userId);
+      await ctx.reply('❌ Đã huỷ kết nối email ngân hàng.');
+      return true;
+    }
+    if (data.startsWith('bank_')) {
+      const bankName = data.replace('bank_', '');
+      const email = this.pendingEmail.get(userId);
+      if (!email) {
+        await ctx.reply('Vui lòng nhập email trước.');
+        return true;
+      }
+      // Lưu vào DB
+      await this.prisma.userBankConfig.upsert({
+        where: { userId },
+        update: { email, bankName, active: true },
+        create: { userId, email, bankName, active: true }
+      });
+      await ctx.reply(
+        `✅ *Kết nối thành công!*
+
+` +
+        `• Email: *${email}*\n` +
+        `• Ngân hàng: *${this.getBankLabel(bankName)}*\n\n` +
+        `Bạn đã kết nối thành công email với ngân hàng. Hệ thống sẽ tự động quét giao dịch mới từ email này.`,
+        { parse_mode: 'Markdown' }
+      );
+      this.pendingEmail.delete(userId);
+      return true;
+    }
+    return false;
+  }
+
+  isValidEmail(email) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  }
+
+  getBankLabel(bankName) {
+    switch (bankName) {
+      case 'VIB': return '💚 VIB';
+      case 'CAKE': return '🍰 CAKE';
+      case 'VPBank': return '💳 VPBank';
+      case 'ACB': return '🏦 ACB';
+      default: return bankName;
+    }
+  }
+
+  // Show bank menu
   async showBankMenu(ctx) {
     const userId = String(ctx.from.id);
     const lang = await languageService.getUserLanguage(userId);
     const t = async (key) => await languageService.getTranslation(lang, key);
 
-    const keyboard = {
-      inline_keyboard: [
-        [
-          { text: await t('BANK_SETUP'), callback_data: 'bank_setup' },
-          { text: await t('BANK_TEST'), callback_data: 'bank_test' }
-        ],
-        [
-          { text: await t('BANK_STATS'), callback_data: 'bank_stats' },
-          { text: await t('BANK_TRANSACTIONS'), callback_data: 'bank_transactions' }
-        ],
-        [
-          { text: await t('BANK_PENDING'), callback_data: 'bank_pending' },
-          { text: await t('BANK_AI'), callback_data: 'bank_ai' }
-        ],
-        [
-          { text: '🔍 Kiểm tra ngay', callback_data: 'bank_force_check' },
-          { text: '📊 Trạng thái', callback_data: 'bank_monitoring_status' }
-        ],
-        [
-          { text: await t('BACK'), callback_data: 'main_menu' }
-        ]
-      ]
-    };
+    const stats = await this.bankService.getBankStats(userId);
+    const status = await this.bankService.getMonitoringStatus();
 
-    await ctx.reply(`${await t('BANK_MENU_TITLE')}
+    let message = `🏦 **${await t('BANK_MENU')}**\n\n`;
 
-${await t('BANK_MENU_DESCRIPTION')}
-
-🔄 **Adaptive Polling:** Tự động điều chỉnh tần suất kiểm tra email
-📧 **Real-time:** Xử lý ngay khi có email mới
-🤖 **AI Analysis:** Phân tích và phân loại tự động`, {
-      reply_markup: keyboard,
-      parse_mode: 'Markdown'
-    });
-  }
-
-  // Hiển thị setup bank
-  async showBankSetup(ctx) {
-    const userId = String(ctx.from.id);
-    const lang = await languageService.getUserLanguage(userId);
-    const t = async (key) => await languageService.getTranslation(lang, key);
-
-    const config = await this.bankService.getUserEmailConfig(userId);
-    
-    let message = `${await t('BANK_SETUP_TITLE')}\n\n`;
-    
-    if (config) {
-      message += `${await t('BANK_SETUP_CURRENT')}:\n`;
-      message += `📧 Email: ${config.email}\n`;
-      message += `🏦 Bank: ${config.bankName}\n`;
-      message += `✅ Status: ${config.active ? await t('ACTIVE') : await t('INACTIVE')}\n\n`;
-    } else {
-      message += `${await t('BANK_SETUP_NOT_CONFIGURED')}\n\n`;
+    // Add stats if available
+    if (stats) {
+      message += `📊 **${await t('BANK_STATS')}:**\n`;
+      message += `• ${await t('TOTAL_TRANSACTIONS')}: ${stats.totalTransactions}\n`;
+      message += `• ${await t('PROCESSED_TRANSACTIONS')}: ${stats.processedTransactions}\n`;
+      message += `• ${await t('PENDING_TRANSACTIONS')}: ${stats.pendingTransactions}\n`;
+      message += `• ${await t('TOTAL_AMOUNT')}: ${stats.totalAmount.toLocaleString('vi-VN')}đ\n\n`;
     }
 
-    message += `${await t('BANK_SETUP_INSTRUCTIONS')}:\n`;
-    message += `1. ${await t('BANK_SETUP_STEP1')}\n`;
-    message += `2. ${await t('BANK_SETUP_STEP2')}\n`;
-    message += `3. ${await t('BANK_SETUP_STEP3')}\n\n`;
-    message += `${await t('BANK_SETUP_SUPPORTED_BANKS')}: VCB, TCB, TPBank, MBBank, ACB, Techcombank\n\n`;
-    message += `🔄 **Adaptive Polling:**\n`;
-    message += `• Tự động điều chỉnh tần suất kiểm tra (2-30 giây)\n`;
-    message += `• Nhanh hơn khi có nhiều email\n`;
-    message += `• Tiết kiệm tài nguyên khi ít email`;
+    // Add monitoring status if available
+    if (status) {
+      message += `📡 **${await t('MONITORING_STATUS')}:**\n`;
+      message += `• ${await t('STATUS')}: ${status.isRunning ? '✅ Running' : '❌ Stopped'}\n`;
+      message += `• ${await t('UPTIME')}: ${Math.floor(status.uptime / 60)} minutes\n`;
+      message += `• ${await t('EMAILS_PROCESSED')}: ${status.totalEmailsProcessed}\n`;
+      if (status.lastEmailTime) {
+        message += `• ${await t('LAST_EMAIL')}: ${new Date(status.lastEmailTime).toLocaleString('vi-VN')}\n`;
+      }
+    }
 
     const keyboard = {
       inline_keyboard: [
         [
-          { text: await t('BANK_SETUP_CONFIGURE'), callback_data: 'bank_configure' },
-          { text: await t('BANK_SETUP_TEST'), callback_data: 'bank_test' }
+          { text: await t('SETUP_BANK'), callback_data: 'bank_setup' },
+          { text: await t('TEST_CONNECTION'), callback_data: 'bank_test' }
         ],
         [
-          { text: '🔍 Kiểm tra ngay', callback_data: 'bank_force_check' },
-          { text: '📊 Trạng thái', callback_data: 'bank_monitoring_status' }
+          { text: await t('VIEW_TRANSACTIONS'), callback_data: 'bank_transactions' },
+          { text: await t('VIEW_PENDING'), callback_data: 'bank_pending' }
         ],
         [
-          { text: await t('BACK'), callback_data: 'bank_menu' }
-        ]
+          { text: await t('CHECK_NOW'), callback_data: 'bank_force_check' },
+          { text: await t('VIEW_STATUS'), callback_data: 'bank_status' }
+        ],
+        [{ text: await t('BACK_MAIN'), callback_data: 'main_menu' }]
       ]
     };
 
@@ -157,122 +224,97 @@ ${await t('BANK_MENU_DESCRIPTION')}
     });
   }
 
-  // Test kết nối bank
+  // Show bank setup
+  async showBankSetup(ctx) {
+    const userId = String(ctx.from.id);
+    const lang = await languageService.getUserLanguage(userId);
+    const t = async (key) => await languageService.getTranslation(lang, key);
+
+    const message = `⚙️ **${await t('BANK_SETUP_TITLE')}**
+
+1️⃣ **${await t('STEP_1')}:**
+${await t('SETUP_GMAIL_2FA')}
+
+2️⃣ **${await t('STEP_2')}:**
+${await t('CREATE_APP_PASSWORD')}
+
+3️⃣ **${await t('STEP_3')}:**
+${await t('SETUP_EMAIL_FORWARD')}
+
+4️⃣ **${await t('STEP_4')}:**
+${await t('TEST_CONNECTION')}
+
+📝 **${await t('SUPPORTED_BANKS')}:**
+• Vietcombank (VCB)
+• Techcombank (TCB)
+• TPBank
+• MBBank
+• ACB
+
+📧 **${await t('SUPPORTED_SERVICES')}:**
+• ${await t('UTILITY_BILLS')}
+• ${await t('ECOMMERCE')}
+• ${await t('BANK_TRANSACTIONS')}`;
+
+    const keyboard = {
+      inline_keyboard: [
+        [
+          { text: await t('START_SETUP'), callback_data: 'bank_start' },
+          { text: await t('TEST_CONNECTION'), callback_data: 'bank_test' }
+        ],
+        [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+      ]
+    };
+
+    await ctx.reply(message, {
+      reply_markup: keyboard,
+      parse_mode: 'Markdown'
+    });
+  }
+
+  // Test bank connection
   async testBankConnection(ctx) {
     const userId = String(ctx.from.id);
     const lang = await languageService.getUserLanguage(userId);
     const t = async (key) => await languageService.getTranslation(lang, key);
 
-    await ctx.reply(`${await t('BANK_TEST_STARTING')}...`);
+    await ctx.reply(await t('TESTING_CONNECTION'));
 
     try {
       const result = await this.bankService.testEmailConnection();
       
       if (result.success) {
-        await ctx.reply(`✅ ${await t('BANK_TEST_SUCCESS')}\n\n${result.message}`);
+        await ctx.reply(`✅ ${await t('TEST_SUCCESS')}`, {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: await t('START_MONITORING'), callback_data: 'bank_start' }],
+              [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+            ]
+          }
+        });
       } else {
-        await ctx.reply(`❌ ${await t('BANK_TEST_FAILED')}\n\n${result.message}`);
+        await ctx.reply(`❌ ${await t('TEST_FAILED')}\n${result.message}`, {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: await t('SETUP_AGAIN'), callback_data: 'bank_setup' }],
+              [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+            ]
+          }
+        });
       }
     } catch (error) {
-      await ctx.reply(`❌ ${await t('BANK_TEST_ERROR')}: ${error.message}`);
-    }
-  }
-
-  // Force check emails ngay lập tức
-  async forceCheckEmails(ctx) {
-    const userId = String(ctx.from.id);
-    const lang = await languageService.getUserLanguage(userId);
-    const t = async (key) => await languageService.getTranslation(lang, key);
-
-    await ctx.reply('🔍 Đang kiểm tra email ngay lập tức...');
-
-    try {
-      const hasNewEmails = await this.bankService.forceCheckEmails();
-      
-      if (hasNewEmails) {
-        await ctx.reply('✅ Phát hiện email mới và đã xử lý!');
-      } else {
-        await ctx.reply('📧 Không có email mới.');
-      }
-    } catch (error) {
-      await ctx.reply(`❌ Lỗi khi kiểm tra email: ${error.message}`);
-    }
-  }
-
-  // Hiển thị trạng thái monitoring
-  async showMonitoringStatus(ctx) {
-    const userId = String(ctx.from.id);
-    const lang = await languageService.getUserLanguage(userId);
-    const t = async (key) => await languageService.getTranslation(lang, key);
-
-    try {
-      const status = this.bankService.getMonitoringStatus();
-      
-      let message = `📊 **Trạng thái Monitoring**\n\n`;
-      
-      if (status.isMonitoring) {
-        const uptimeMinutes = Math.floor(status.uptime / 60000);
-        const uptimeHours = Math.floor(uptimeMinutes / 60);
-        const remainingMinutes = uptimeMinutes % 60;
-        
-        message += `✅ **Đang hoạt động**\n`;
-        message += `⏱️ **Thời gian chạy:** ${uptimeHours}h ${remainingMinutes}m\n`;
-        message += `📧 **Email đã xử lý:** ${status.totalEmailsProcessed}\n`;
-        message += `🔄 **Interval hiện tại:** ${status.currentInterval}ms\n`;
-        
-        if (status.lastEmailTime) {
-          const lastEmailTime = new Date(status.lastEmailTime);
-          const timeDiff = Date.now() - lastEmailTime.getTime();
-          const minutesAgo = Math.floor(timeDiff / 60000);
-          message += `📅 **Email cuối:** ${minutesAgo} phút trước\n`;
-        } else {
-          message += `📅 **Email cuối:** Chưa có\n`;
-        }
-      } else {
-        message += `❌ **Đã dừng**\n`;
-        message += `💡 Gửi "restart monitoring" để khởi động lại`;
-      }
-
-      const keyboard = {
-        inline_keyboard: [
-          [
-            { text: '🔍 Kiểm tra ngay', callback_data: 'bank_force_check' },
-            { text: '🔄 Khởi động lại', callback_data: 'bank_restart' }
-          ],
-          [
-            { text: await t('BACK'), callback_data: 'bank_menu' }
+      console.error('❌ Error testing connection:', error);
+      await ctx.reply(`❌ ${await t('TEST_ERROR')}\n${error.message}`, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: await t('BACK'), callback_data: 'bank_menu' }]
           ]
-        ]
-      };
-
-      await ctx.reply(message, {
-        reply_markup: keyboard,
-        parse_mode: 'Markdown'
+        }
       });
-
-    } catch (error) {
-      console.error('❌ Error showing monitoring status:', error);
-      await ctx.reply(`${await t('ERROR')}: ${error.message}`);
     }
   }
 
-  // Restart monitoring
-  async restartMonitoring(ctx) {
-    const userId = String(ctx.from.id);
-    const lang = await languageService.getUserLanguage(userId);
-    const t = async (key) => await languageService.getTranslation(lang, key);
-
-    await ctx.reply('🔄 Đang khởi động lại monitoring...');
-
-    try {
-      await this.bankService.restartMonitoring();
-      await ctx.reply('✅ Monitoring đã được khởi động lại thành công!');
-    } catch (error) {
-      await ctx.reply(`❌ Lỗi khi khởi động lại: ${error.message}`);
-    }
-  }
-
-  // Hiển thị thống kê bank
+  // Show bank stats
   async showBankStats(ctx) {
     const userId = String(ctx.from.id);
     const lang = await languageService.getUserLanguage(userId);
@@ -282,260 +324,274 @@ ${await t('BANK_MENU_DESCRIPTION')}
       const stats = await this.bankService.getBankStats(userId);
       
       if (!stats) {
-        await ctx.reply(await t('BANK_STATS_NO_DATA'));
+        await ctx.reply(await t('NO_STATS_AVAILABLE'), {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+            ]
+          }
+        });
         return;
       }
 
-      let message = `${await t('BANK_STATS_TITLE')}\n\n`;
-      message += `📊 **${await t('BANK_STATS_TOTAL_TRANSACTIONS')}:** ${stats.totalTransactions}\n`;
-      message += `💰 **${await t('BANK_STATS_TOTAL_AMOUNT')}:** ${stats.totalAmount.toLocaleString('vi-VN')}đ\n\n`;
-
-      if (stats.emailStats) {
-        message += `📧 **Thông tin Email:**\n`;
-        message += `📧 Tổng email: ${stats.emailStats.total}\n`;
-        message += `✅ Đã xử lý: ${stats.emailStats.processed}\n`;
-        message += `🤖 AI xử lý: ${stats.emailStats.aiProcessed}\n`;
-        message += `⏳ Chờ xử lý: ${stats.emailStats.pending}\n`;
-        message += `🔄 Interval hiện tại: ${stats.emailStats.currentInterval}ms\n\n`;
+      let message = `📊 **${await t('BANK_STATS')}**\n\n`;
+      message += `• ${await t('TOTAL_TRANSACTIONS')}: ${stats.totalTransactions}\n`;
+      message += `• ${await t('PROCESSED_TRANSACTIONS')}: ${stats.processedTransactions}\n`;
+      message += `• ${await t('PENDING_TRANSACTIONS')}: ${stats.pendingTransactions}\n`;
+      message += `• ${await t('TOTAL_AMOUNT')}: ${stats.totalAmount.toLocaleString('vi-VN')}đ\n`;
+      
+      if (stats.lastTransactionDate) {
+        message += `• ${await t('LAST_TRANSACTION')}: ${new Date(stats.lastTransactionDate).toLocaleString('vi-VN')}\n`;
       }
-
-      if (stats.monitoringStats) {
-        const uptime = stats.monitoringStats.uptime;
-        const uptimeMinutes = Math.floor(uptime / 60000);
-        const uptimeHours = Math.floor(uptimeMinutes / 60);
-        const remainingMinutes = uptimeMinutes % 60;
-        
-        message += `📊 **Monitoring Stats:**\n`;
-        message += `⏱️ Thời gian chạy: ${uptimeHours}h ${remainingMinutes}m\n`;
-        message += `📧 Email đã xử lý: ${stats.monitoringStats.totalEmailsProcessed}\n`;
-        if (stats.monitoringStats.lastEmailTime) {
-          const lastEmailTime = new Date(stats.monitoringStats.lastEmailTime);
-          const timeDiff = Date.now() - lastEmailTime.getTime();
-          const minutesAgo = Math.floor(timeDiff / 60000);
-          message += `📅 Email cuối: ${minutesAgo} phút trước\n`;
-        }
-        message += `\n`;
-      }
-
-      if (Object.keys(stats.byBank).length > 0) {
-        message += `📂 **Theo ngân hàng:**\n`;
-        for (const [key, data] of Object.entries(stats.byBank)) {
-          const type = data.type === 'credit' ? '💰' : '💸';
-          message += `${type} ${data.bank}: ${data.count} ${await t('TRANSACTIONS')} (${data.amount.toLocaleString('vi-VN')}đ)\n`;
-        }
-      }
-
-      const keyboard = {
-        inline_keyboard: [
-          [
-            { text: await t('BANK_STATS_DETAILS'), callback_data: 'bank_stats_details' },
-            { text: await t('BANK_STATS_AI'), callback_data: 'bank_ai_stats' }
-          ],
-          [
-            { text: '🔍 Kiểm tra ngay', callback_data: 'bank_force_check' },
-            { text: '📊 Trạng thái', callback_data: 'bank_monitoring_status' }
-          ],
-          [
-            { text: await t('BACK'), callback_data: 'bank_menu' }
-          ]
-        ]
-      };
 
       await ctx.reply(message, {
-        reply_markup: keyboard,
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: await t('VIEW_TRANSACTIONS'), callback_data: 'bank_transactions' },
+              { text: await t('VIEW_PENDING'), callback_data: 'bank_pending' }
+            ],
+            [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+          ]
+        },
         parse_mode: 'Markdown'
       });
-
     } catch (error) {
       console.error('❌ Error showing bank stats:', error);
-      await ctx.reply(`${await t('ERROR')}: ${error.message}`);
+      await ctx.reply(await t('ERROR_GETTING_STATS'), {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+          ]
+        }
+      });
     }
   }
 
-  // Hiển thị giao dịch bank
+  // Show bank transactions
   async showBankTransactions(ctx) {
     const userId = String(ctx.from.id);
     const lang = await languageService.getUserLanguage(userId);
     const t = async (key) => await languageService.getTranslation(lang, key);
 
     try {
-      const transactions = await this.bankService.getBankTransactions(userId, 5);
+      const transactions = await this.bankService.getBankTransactions(userId, { take: 5 });
       
       if (transactions.length === 0) {
-        await ctx.reply(await t('BANK_TRANSACTIONS_NO_DATA'));
+        await ctx.reply(await t('NO_TRANSACTIONS'), {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+            ]
+          }
+        });
         return;
       }
 
-      let message = `${await t('BANK_TRANSACTIONS_TITLE')} (5 ${await t('LATEST')})\n\n`;
-
-      for (const [index, tx] of transactions.entries()) {
-        const type = tx.type === 'credit' ? '💰' : '💸';
-        const status = tx.processed ? '✅' : '⏳';
-        const aiStatus = tx.aiProcessed ? '🤖' : '❌';
-        let aiCategory = tx.aiCategory;
-        if (!aiCategory) aiCategory = await t('UNCATEGORIZED');
-        message += `${index + 1}. ${type} ${tx.bankName}\n`;
-        message += `   💵 ${tx.amount.toLocaleString('vi-VN')}đ\n`;
+      let message = `📋 **${await t('RECENT_TRANSACTIONS')}**\n\n`;
+      
+      transactions.forEach((tx, index) => {
+        message += `${index + 1}. ${tx.type === 'credit' ? '💵' : '💸'} `;
+        message += `**${tx.amount.toLocaleString('vi-VN')}đ**\n`;
+        message += `   🏦 ${tx.bankName}\n`;
         message += `   📝 ${tx.description}\n`;
-        message += `   📅 ${new Date(tx.date).toLocaleDateString('vi-VN')}\n`;
-        message += `   ${status} ${aiStatus} ${aiCategory}\n\n`;
-      }
-
-      const keyboard = {
-        inline_keyboard: [
-          [
-            { text: await t('BANK_TRANSACTIONS_VIEW_ALL'), callback_data: 'bank_transactions_all' },
-            { text: await t('BANK_TRANSACTIONS_PENDING'), callback_data: 'bank_pending' }
-          ],
-          [
-            { text: '🔍 Kiểm tra ngay', callback_data: 'bank_force_check' },
-            { text: await t('BACK'), callback_data: 'bank_menu' }
-          ]
-        ]
-      };
-
-      await ctx.reply(message, {
-        reply_markup: keyboard,
-        parse_mode: 'Markdown'
+        message += `   📅 ${new Date(tx.date).toLocaleString('vi-VN')}\n`;
+        if (tx.aiCategory) {
+          message += `   🤖 ${tx.aiCategory} (${(tx.aiConfidence * 100).toFixed(0)}%)\n`;
+        }
+        message += `\n`;
       });
 
+      await ctx.reply(message, {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: await t('VIEW_MORE'), callback_data: 'bank_transactions_more' },
+              { text: await t('VIEW_PENDING'), callback_data: 'bank_pending' }
+            ],
+            [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+          ]
+        },
+        parse_mode: 'Markdown'
+      });
     } catch (error) {
       console.error('❌ Error showing bank transactions:', error);
-      await ctx.reply(`${await t('ERROR')}: ${error.message}`);
+      await ctx.reply(await t('ERROR_GETTING_TRANSACTIONS'), {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+          ]
+        }
+      });
     }
   }
 
-  // Hiển thị giao dịch chờ xử lý
+  // Show pending transactions
   async showPendingTransactions(ctx) {
     const userId = String(ctx.from.id);
     const lang = await languageService.getUserLanguage(userId);
     const t = async (key) => await languageService.getTranslation(lang, key);
 
     try {
-      const pending = await this.bankService.getPendingTransactions(userId);
+      const transactions = await this.bankService.getPendingTransactions(userId);
       
-      if (pending.length === 0) {
-        await ctx.reply(await t('BANK_PENDING_NO_DATA'));
+      if (transactions.length === 0) {
+        await ctx.reply(await t('NO_PENDING_TRANSACTIONS'), {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+            ]
+          }
+        });
         return;
       }
 
-      let message = `${await t('BANK_PENDING_TITLE')} (${pending.length} ${await t('TRANSACTIONS')})\n\n`;
-
-      pending.forEach((tx, index) => {
-        const type = tx.type === 'credit' ? '💰' : '💸';
-        
-        message += `${index + 1}. ${type} ${tx.bankName}\n`;
-        message += `   💵 ${tx.amount.toLocaleString('vi-VN')}đ\n`;
+      let message = `⏳ **${await t('PENDING_TRANSACTIONS')}**\n\n`;
+      
+      transactions.forEach((tx, index) => {
+        message += `${index + 1}. ${tx.type === 'credit' ? '💵' : '💸'} `;
+        message += `**${tx.amount.toLocaleString('vi-VN')}đ**\n`;
+        message += `   🏦 ${tx.bankName}\n`;
         message += `   📝 ${tx.description}\n`;
-        message += `   📅 ${new Date(tx.date).toLocaleDateString('vi-VN')}\n`;
-        message += `   ID: ${tx.id}\n\n`;
+        message += `   📅 ${new Date(tx.date).toLocaleString('vi-VN')}\n`;
+        if (tx.aiCategory) {
+          message += `   🤖 ${tx.aiCategory} (${(tx.aiConfidence * 100).toFixed(0)}%)\n`;
+        }
+        message += `   ➡️ /approve_${tx.id} or /reject_${tx.id}\n\n`;
       });
-
-      const keyboard = {
-        inline_keyboard: [
-          [
-            { text: await t('BANK_PENDING_PROCESS_ALL'), callback_data: 'bank_pending_process_all' },
-            { text: await t('BANK_PENDING_PROCESS_ONE'), callback_data: 'bank_pending_process_one' }
-          ],
-          [
-            { text: '🔍 Kiểm tra ngay', callback_data: 'bank_force_check' },
-            { text: await t('BACK'), callback_data: 'bank_menu' }
-          ]
-        ]
-      };
 
       await ctx.reply(message, {
-        reply_markup: keyboard,
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: await t('APPROVE_ALL'), callback_data: 'bank_approve_all' },
+              { text: await t('REJECT_ALL'), callback_data: 'bank_reject_all' }
+            ],
+            [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+          ]
+        },
         parse_mode: 'Markdown'
       });
-
     } catch (error) {
       console.error('❌ Error showing pending transactions:', error);
-      await ctx.reply(`${await t('ERROR')}: ${error.message}`);
+      await ctx.reply(await t('ERROR_GETTING_PENDING'), {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+          ]
+        }
+      });
     }
   }
 
-  // Retrain AI
-  async retrainAI(ctx) {
+  // Force check emails
+  async forceCheckEmails(ctx) {
     const userId = String(ctx.from.id);
     const lang = await languageService.getUserLanguage(userId);
     const t = async (key) => await languageService.getTranslation(lang, key);
 
-    await ctx.reply(`${await t('BANK_AI_RETRAINING')}...`);
+    await ctx.reply(await t('CHECKING_EMAILS'));
 
     try {
-      const result = await this.bankService.retrainAI();
+      const hasNewEmails = await this.bankService.forceCheckEmails();
       
-      if (result.success) {
-        await ctx.reply(`✅ ${await t('BANK_AI_RETRAIN_SUCCESS')}\n\n` +
-          `${await t('BANK_AI_CATEGORIES')}: ${result.categories.join(', ')}\n` +
-          `${await t('BANK_AI_TOTAL_TRANSACTIONS')}: ${result.totalTransactions}`);
+      if (hasNewEmails) {
+        await ctx.reply(await t('NEW_EMAILS_FOUND'), {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: await t('VIEW_PENDING'), callback_data: 'bank_pending' },
+                { text: await t('VIEW_TRANSACTIONS'), callback_data: 'bank_transactions' }
+              ],
+              [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+            ]
+          }
+        });
       } else {
-        await ctx.reply(`❌ ${await t('BANK_AI_RETRAIN_FAILED')}: ${result.error}`);
+        await ctx.reply(await t('NO_NEW_EMAILS'), {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+            ]
+          }
+        });
       }
     } catch (error) {
-      await ctx.reply(`❌ ${await t('BANK_AI_RETRAIN_ERROR')}: ${error.message}`);
+      console.error('❌ Error force checking emails:', error);
+      await ctx.reply(await t('ERROR_CHECKING_EMAILS'), {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+          ]
+        }
+      });
     }
   }
 
-  // Xử lý callback bank
-  async handleBankCallback(ctx) {
-    const callbackData = ctx.callbackQuery.data;
+  // Show monitoring status
+  async showMonitoringStatus(ctx) {
     const userId = String(ctx.from.id);
     const lang = await languageService.getUserLanguage(userId);
     const t = async (key) => await languageService.getTranslation(lang, key);
 
     try {
-      switch (callbackData) {
-        case 'bank_menu':
-          await this.showBankMenu(ctx);
-          break;
-          
-        case 'bank_setup':
-          await this.showBankSetup(ctx);
-          break;
-          
-        case 'bank_test':
-          await this.testBankConnection(ctx);
-          break;
-          
-        case 'bank_stats':
-          await this.showBankStats(ctx);
-          break;
-          
-        case 'bank_transactions':
-          await this.showBankTransactions(ctx);
-          break;
-          
-        case 'bank_pending':
-          await this.showPendingTransactions(ctx);
-          break;
-          
-        case 'bank_ai':
-          await this.retrainAI(ctx);
-          break;
-          
-        case 'bank_force_check':
-          await this.forceCheckEmails(ctx);
-          break;
-          
-        case 'bank_monitoring_status':
-          await this.showMonitoringStatus(ctx);
-          break;
-          
-        case 'bank_restart':
-          await this.restartMonitoring(ctx);
-          break;
-          
-        default:
-          const unknownMsg = await t('UNKNOWN_COMMAND');
-          await ctx.reply(unknownMsg);
-          break;
+      const status = await this.bankService.getMonitoringStatus();
+      
+      if (!status) {
+        await ctx.reply(await t('NO_STATUS_AVAILABLE'), {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+            ]
+          }
+        });
+        return;
       }
+
+      let message = `📡 **${await t('MONITORING_STATUS')}**\n\n`;
+      message += `• ${await t('STATUS')}: ${status.isRunning ? '✅ Running' : '❌ Stopped'}\n`;
+      message += `• ${await t('UPTIME')}: ${Math.floor(status.uptime / 60)} minutes\n`;
+      message += `• ${await t('EMAILS_PROCESSED')}: ${status.totalEmailsProcessed}\n`;
+      message += `• ${await t('AVG_PROCESSING_TIME')}: ${status.averageProcessingTime.toFixed(2)}ms\n`;
+      message += `• ${await t('CURRENT_INTERVAL')}: ${status.currentInterval}ms\n`;
+      
+      if (status.lastEmailTime) {
+        message += `• ${await t('LAST_EMAIL')}: ${new Date(status.lastEmailTime).toLocaleString('vi-VN')}\n`;
+      }
+
+      if (status.emailStats) {
+        message += `\n📊 **${await t('EMAIL_STATS')}:**\n`;
+        message += `• ${await t('TOTAL_EMAILS')}: ${status.emailStats.total}\n`;
+        message += `• ${await t('PROCESSED_EMAILS')}: ${status.emailStats.processed}\n`;
+        message += `• ${await t('AI_PROCESSED')}: ${status.emailStats.aiProcessed}\n`;
+        message += `• ${await t('PENDING_EMAILS')}: ${status.emailStats.pending}\n`;
+      }
+
+      await ctx.reply(message, {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: status.isRunning ? await t('STOP_MONITORING') : await t('START_MONITORING'), 
+                callback_data: status.isRunning ? 'bank_stop' : 'bank_start' }
+            ],
+            [
+              { text: await t('CHECK_NOW'), callback_data: 'bank_force_check' },
+              { text: await t('VIEW_PENDING'), callback_data: 'bank_pending' }
+            ],
+            [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+          ]
+        },
+        parse_mode: 'Markdown'
+      });
     } catch (error) {
-      console.error('❌ Error in bank callback handler:', error);
-      const errorMsg = await t('ERROR');
-      await ctx.reply(`${errorMsg}: ${error.message}`);
+      console.error('❌ Error showing monitoring status:', error);
+      await ctx.reply(await t('ERROR_GETTING_STATUS'), {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: await t('BACK'), callback_data: 'bank_menu' }]
+          ]
+        }
+      });
     }
   }
 }

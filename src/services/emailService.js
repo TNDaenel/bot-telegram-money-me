@@ -11,22 +11,42 @@ class EmailService {
     this.isMonitoring = false;
     this.lastCheckTime = null;
     this.checkInterval = null;
-    this.adaptiveInterval = 5000; // Bắt đầu với 5 giây
-    this.maxInterval = 30000; // Tối đa 30 giây
-    this.minInterval = 2000; // Tối thiểu 2 giây
+    this.adaptiveInterval = 5000; // Start with 5 seconds
+    this.maxInterval = 30000; // Max 30 seconds
+    this.minInterval = 2000; // Min 2 seconds
     this.consecutiveNoEmails = 0;
     this.consecutiveEmails = 0;
+    
+    // Supported email patterns
+    this.supportedPatterns = {
+      banks: [
+        { domain: 'vcb.com.vn', name: 'Vietcombank' },
+        { domain: 'techcombank.com.vn', name: 'Techcombank' },
+        { domain: 'tpbank.com.vn', name: 'TPBank' },
+        { domain: 'mbbank.com.vn', name: 'MBBank' },
+        { domain: 'acb.com.vn', name: 'ACB' }
+      ],
+      utilities: [
+        { domain: 'evnhcmc.vn', name: 'EVN HCMC' },
+        { domain: 'evnhanoi.vn', name: 'EVN Hanoi' }
+      ],
+      ecommerce: [
+        { domain: 'tiki.vn', name: 'Tiki' },
+        { domain: 'shopee.vn', name: 'Shopee' },
+        { domain: 'lazada.vn', name: 'Lazada' }
+      ]
+    };
   }
 
-  // Kết nối IMAP
+  // Connect to IMAP
   async connect() {
     try {
       this.imap = new Imap({
         user: process.env.EMAIL_USER,
         password: process.env.EMAIL_PASSWORD,
-        host: 'imap.gmail.com',
-        port: 993,
-        tls: true,
+        host: process.env.EMAIL_HOST || 'imap.gmail.com',
+        port: parseInt(process.env.EMAIL_PORT) || 993,
+        tls: process.env.EMAIL_TLS !== 'false',
         tlsOptions: { rejectUnauthorized: false }
       });
 
@@ -51,112 +71,52 @@ class EmailService {
     }
   }
 
-  // Bắt đầu monitoring với adaptive polling
-  async startMonitoring() {
-    if (!this.isConnected) {
-      await this.connect();
-    }
-
-    if (this.isMonitoring) {
-      console.log('⚠️ Email monitoring already running');
-      return;
-    }
-
-    this.isMonitoring = true;
-    console.log('📧 Starting adaptive email monitoring...');
-
-    // Kiểm tra ngay lập tức
-    await this.checkNewEmails();
-
-    // Bắt đầu adaptive polling
-    this.startAdaptivePolling();
-  }
-
-  // Adaptive polling - điều chỉnh interval dựa trên hoạt động
-  startAdaptivePolling() {
-    const poll = async () => {
-      if (!this.isMonitoring) return;
-
-      try {
-        const hasNewEmails = await this.checkNewEmails();
-        
-        if (hasNewEmails) {
-          // Có email mới - giảm interval để kiểm tra nhanh hơn
-          this.consecutiveEmails++;
-          this.consecutiveNoEmails = 0;
-          
-          if (this.consecutiveEmails >= 3) {
-            this.adaptiveInterval = Math.max(this.minInterval, this.adaptiveInterval / 2);
-            console.log(`📧 High email activity - reducing interval to ${this.adaptiveInterval}ms`);
-          }
-        } else {
-          // Không có email mới - tăng interval để tiết kiệm tài nguyên
-          this.consecutiveNoEmails++;
-          this.consecutiveEmails = 0;
-          
-          if (this.consecutiveNoEmails >= 5) {
-            this.adaptiveInterval = Math.min(this.maxInterval, this.adaptiveInterval * 1.5);
-            console.log(`📧 Low email activity - increasing interval to ${this.adaptiveInterval}ms`);
-          }
-        }
-
-        // Lên lịch kiểm tra tiếp theo
-        this.checkInterval = setTimeout(poll, this.adaptiveInterval);
-        
-      } catch (error) {
-        console.error('❌ Error in adaptive polling:', error);
-        // Nếu có lỗi, thử lại sau 10 giây
-        this.checkInterval = setTimeout(poll, 10000);
-      }
-    };
-
-    // Bắt đầu polling
-    poll();
-  }
-
-  // Dừng monitoring
-  stopMonitoring() {
-    this.isMonitoring = false;
-    if (this.checkInterval) {
-      clearTimeout(this.checkInterval);
-      this.checkInterval = null;
-    }
-    if (this.imap) {
-      this.imap.end();
-    }
-    console.log('📧 Email monitoring stopped');
-  }
-
-  // Kiểm tra email mới với thông tin chi tiết
+  // Check new emails with detailed info
   async checkNewEmails() {
     if (!this.isConnected) return false;
 
     return new Promise((resolve, reject) => {
-      this.imap.openBox('INBOX', false, (err, box) => {
+      this.imap.openBox('INBOX', false, async (err, box) => {
         if (err) {
           console.error('❌ Error opening inbox:', err);
           reject(err);
           return;
         }
 
-        // Tìm email chưa đọc từ ngân hàng
-        const searchCriteria = [
-          ['UNSEEN'],
-          ['FROM', 'noreply@vcb.com.vn'],
-          ['FROM', 'noreply@tcb.com.vn'],
-          ['FROM', 'noreply@tpb.com.vn'],
-          ['FROM', 'noreply@mbbank.com.vn'],
-          ['FROM', 'noreply@acb.com.vn'],
-          ['FROM', 'noreply@techcombank.com.vn'],
-          ['OR'],
-          ['SUBJECT', 'GD:'],
-          ['SUBJECT', 'Giao dich:'],
-          ['SUBJECT', 'Transaction:'],
-          ['BODY', 'So du:'],
-          ['BODY', 'Balance:']
+        // Build search criteria for all supported patterns
+        const searchCriteria = ['UNSEEN'];
+        const fromCriteria = [];
+
+        // Add bank email patterns
+        this.supportedPatterns.banks.forEach(bank => {
+          fromCriteria.push(['FROM', `*@${bank.domain}`]);
+        });
+
+        // Add utility bill patterns
+        this.supportedPatterns.utilities.forEach(utility => {
+          fromCriteria.push(['FROM', `*@${utility.domain}`]);
+        });
+
+        // Add e-commerce patterns
+        this.supportedPatterns.ecommerce.forEach(shop => {
+          fromCriteria.push(['FROM', `*@${shop.domain}`]);
+        });
+
+        // Add subject patterns
+        const subjectPatterns = [
+          'GD:', 'Giao dich:', 'Transaction:', 
+          'Hoa don:', 'Invoice:', 'Bill:',
+          'Order:', 'Don hang:', 'Thanh toan:'
         ];
 
-        this.imap.search(searchCriteria, (err, results) => {
+        subjectPatterns.forEach(pattern => {
+          fromCriteria.push(['SUBJECT', pattern]);
+        });
+
+        // Combine all criteria
+        const finalCriteria = [...searchCriteria, ['OR', ...fromCriteria]];
+
+        this.imap.search(finalCriteria, async (err, results) => {
           if (err) {
             console.error('❌ Error searching emails:', err);
             reject(err);
@@ -164,20 +124,20 @@ class EmailService {
           }
 
           if (results.length === 0) {
-            console.log('📧 No new bank emails found');
+            console.log('📧 No new relevant emails found');
             resolve(false);
             return;
           }
 
-          console.log(`📧 Found ${results.length} new bank emails`);
-          this.processEmails(results);
+          console.log(`📧 Found ${results.length} new relevant emails`);
+          await this.processEmails(results);
           resolve(true);
         });
       });
     });
   }
 
-  // Xử lý danh sách email với thông báo real-time
+  // Process list of emails with real-time notification
   async processEmails(emailIds) {
     console.log(`🔄 Processing ${emailIds.length} emails...`);
     
@@ -186,27 +146,37 @@ class EmailService {
         const email = await this.fetchEmail(id);
         console.log(`📧 Processing email: ${email.subject} from ${email.from}`);
         
-        const transactionInfo = this.extractTransactionInfo(email);
+        // Determine email type and extract info
+        const emailInfo = await this.analyzeEmailType(email);
         
-        if (!transactionInfo) {
-          console.log('⚠️ Could not extract transaction info from email');
+        if (!emailInfo) {
+          console.log('⚠️ Could not analyze email type');
           await this.markAsRead(id);
           continue;
         }
 
-        // Lưu vào database
-        const bankTransaction = await this.saveBankTransaction(transactionInfo);
+        // Process based on email type
+        switch (emailInfo.type) {
+          case 'bank':
+            await this.processBankEmail(email, emailInfo);
+            break;
+          case 'utility':
+            await this.processUtilityBill(email, emailInfo);
+            break;
+          case 'ecommerce':
+            await this.processEcommerceOrder(email, emailInfo);
+            break;
+          default:
+            console.log(`⚠️ Unsupported email type: ${emailInfo.type}`);
+        }
         
-        // AI phân tích và tạo giao dịch
-        await this.processWithAI(bankTransaction);
-        
-        // Đánh dấu đã đọc
+        // Mark as read
         await this.markAsRead(id);
         
-        console.log(`✅ Processed transaction: ${transactionInfo.amount}đ from ${transactionInfo.bankName}`);
+        console.log(`✅ Processed email from: ${emailInfo.sender}`);
         
-        // Thông báo real-time (có thể gửi notification)
-        await this.sendRealTimeNotification(transactionInfo);
+        // Send real-time notification
+        await this.sendRealTimeNotification(emailInfo);
         
       } catch (error) {
         console.error(`❌ Error processing email ${id}:`, error);
@@ -214,22 +184,229 @@ class EmailService {
     }
   }
 
-  // Gửi thông báo real-time
-  async sendRealTimeNotification(transactionInfo) {
+  // Analyze email type and extract basic info
+  async analyzeEmailType(email) {
     try {
-      // Có thể tích hợp với Telegram bot để gửi notification
-      const message = `🏦 **Giao dịch mới được phát hiện!**
+      const from = email.from.toLowerCase();
+      const subject = email.subject.toLowerCase();
+      const text = email.text.toLowerCase();
 
-💰 **Số tiền:** ${transactionInfo.amount.toLocaleString('vi-VN')}đ
-🏛️ **Ngân hàng:** ${transactionInfo.bankName}
-📝 **Mô tả:** ${transactionInfo.description}
-📅 **Thời gian:** ${new Date().toLocaleString('vi-VN')}
+      // Check bank emails
+      for (const bank of this.supportedPatterns.banks) {
+        if (from.includes(bank.domain)) {
+          return {
+            type: 'bank',
+            sender: bank.name,
+            ...this.extractBankInfo(text, bank)
+          };
+        }
+      }
 
-🤖 **AI đang phân tích và tạo giao dịch...**`;
+      // Check utility bills
+      for (const utility of this.supportedPatterns.utilities) {
+        if (from.includes(utility.domain)) {
+          return {
+            type: 'utility',
+            sender: utility.name,
+            ...this.extractUtilityInfo(text, utility)
+          };
+        }
+      }
+
+      // Check e-commerce orders
+      for (const shop of this.supportedPatterns.ecommerce) {
+        if (from.includes(shop.domain)) {
+          return {
+            type: 'ecommerce',
+            sender: shop.name,
+            ...this.extractEcommerceInfo(text, shop)
+          };
+        }
+      }
+
+      return null;
+    } catch (error) {
+      console.error('❌ Error analyzing email type:', error);
+      return null;
+    }
+  }
+
+  // Extract bank transaction info
+  extractBankInfo(text, bank) {
+    try {
+      // Common patterns for bank emails
+      const amountPattern = /(?:số tiền|amount|giá trị)[\s:]*([0-9,.]+)/i;
+      const typePattern = /(?:loại giao dịch|type|hình thức)[\s:]*(\w+)/i;
+      const descPattern = /(?:nội dung|content|mô tả)[\s:]*(.*?)(?:\n|$)/i;
+      const refPattern = /(?:mã giao dịch|ref|reference)[\s:]*([\w\d]+)/i;
+
+      const amount = this.extractAmount(text, amountPattern);
+      const type = (typePattern.exec(text) || [])[1];
+      const description = (descPattern.exec(text) || [])[1];
+      const reference = (refPattern.exec(text) || [])[1];
+
+      return {
+        amount,
+        type: type || 'unknown',
+        description: description || '',
+        reference: reference || `${bank.name}_${Date.now()}`,
+        rawEmail: text
+      };
+          } catch (error) {
+      console.error('❌ Error extracting bank info:', error);
+      return null;
+    }
+  }
+
+  // Extract utility bill info
+  extractUtilityInfo(text, utility) {
+    try {
+      // Common patterns for utility bills
+      const amountPattern = /(?:số tiền|amount|tổng tiền)[\s:]*([0-9,.]+)/i;
+      const periodPattern = /(?:kỳ|period|thời gian)[\s:]*(\d{2}\/\d{4})/i;
+      const customerPattern = /(?:mã khách hàng|customer id)[\s:]*([\w\d]+)/i;
+
+      const amount = this.extractAmount(text, amountPattern);
+      const period = (periodPattern.exec(text) || [])[1];
+      const customerId = (customerPattern.exec(text) || [])[1];
+
+      return {
+        amount,
+        type: 'utility_bill',
+        description: `Hóa đơn ${utility.name} - ${period || 'Kỳ mới'}`,
+        reference: customerId || `${utility.name}_${Date.now()}`,
+        category: 'Utilities',
+        rawEmail: text
+      };
+    } catch (error) {
+      console.error('❌ Error extracting utility info:', error);
+      return null;
+    }
+  }
+
+  // Extract e-commerce order info
+  extractEcommerceInfo(text, shop) {
+    try {
+      // Common patterns for e-commerce orders
+      const amountPattern = /(?:tổng tiền|total|thanh toán)[\s:]*([0-9,.]+)/i;
+      const orderPattern = /(?:mã đơn hàng|order id)[\s:]*([\w\d-]+)/i;
+      const itemPattern = /(?:sản phẩm|items)[\s:]*(.*?)(?:\n|$)/i;
+
+      const amount = this.extractAmount(text, amountPattern);
+      const orderId = (orderPattern.exec(text) || [])[1];
+      const items = (itemPattern.exec(text) || [])[1];
+
+      return {
+        amount,
+        type: 'ecommerce_order',
+        description: `Đơn hàng ${shop.name}${items ? ': ' + items : ''}`,
+        reference: orderId || `${shop.name}_${Date.now()}`,
+        category: 'Shopping',
+        rawEmail: text
+      };
+    } catch (error) {
+      console.error('❌ Error extracting e-commerce info:', error);
+      return null;
+    }
+  }
+
+  // Extract amount from text with pattern
+  extractAmount(text, pattern) {
+    try {
+      const match = pattern.exec(text);
+      if (!match) return null;
+
+      const amountStr = match[1].replace(/[,.]/g, '');
+      return parseInt(amountStr, 10);
+    } catch (error) {
+      console.error('❌ Error extracting amount:', error);
+      return null;
+    }
+  }
+
+  // Process bank email
+  async processBankEmail(email, info) {
+    try {
+      // Save bank transaction
+      const transaction = await this.prisma.bankTransaction.create({
+        data: {
+          bankName: info.sender,
+          amount: info.amount,
+          type: info.type,
+          description: info.description,
+          reference: info.reference,
+          date: email.date,
+          rawEmail: info.rawEmail
+        }
+      });
+
+      // Process with AI
+      await this.processWithAI(transaction);
+
+      console.log(`✅ Processed bank transaction: ${info.amount}đ from ${info.sender}`);
+    } catch (error) {
+      console.error('❌ Error processing bank email:', error);
+    }
+  }
+
+  // Process utility bill
+  async processUtilityBill(email, info) {
+    try {
+      // Create expense directly
+      const expense = await this.prisma.expense.create({
+        data: {
+          userId: null, // Will be linked when user confirms
+          category: info.category,
+          amount: info.amount,
+          note: info.description,
+          source: 'email',
+          bankRef: info.reference
+        }
+      });
+
+      console.log(`✅ Created utility expense: ${info.amount}đ for ${info.sender}`);
+    } catch (error) {
+      console.error('❌ Error processing utility bill:', error);
+    }
+  }
+
+  // Process e-commerce order
+  async processEcommerceOrder(email, info) {
+    try {
+      // Create expense directly
+      const expense = await this.prisma.expense.create({
+        data: {
+          userId: null, // Will be linked when user confirms
+          category: info.category,
+          amount: info.amount,
+          note: info.description,
+          source: 'email',
+          bankRef: info.reference
+        }
+      });
+
+      console.log(`✅ Created e-commerce expense: ${info.amount}đ from ${info.sender}`);
+    } catch (error) {
+      console.error('❌ Error processing e-commerce order:', error);
+    }
+  }
+
+  // Send real-time notification
+  async sendRealTimeNotification(info) {
+    try {
+      const message = `🔔 **New Transaction Detected!**
+
+💰 **Amount:** ${info.amount.toLocaleString('vi-VN')}đ
+🏢 **From:** ${info.sender}
+📝 **Type:** ${this.getTypeEmoji(info.type)} ${info.type}
+📄 **Description:** ${info.description}
+📅 **Time:** ${new Date().toLocaleString('vi-VN')}
+
+🤖 **AI is analyzing the transaction...**`;
 
       console.log('📢 Real-time notification:', message);
       
-      // TODO: Gửi notification qua Telegram bot
+      // TODO: Send notification via Telegram bot
       // await bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' });
       
     } catch (error) {
@@ -237,218 +414,29 @@ class EmailService {
     }
   }
 
-  // Lấy nội dung email
-  async fetchEmail(emailId) {
-    return new Promise((resolve, reject) => {
-      const fetch = this.imap.fetch(emailId, { bodies: '' });
-
-      fetch.on('message', (msg, seqno) => {
-        let buffer = '';
-        msg.on('body', (stream, info) => {
-          stream.on('data', (chunk) => {
-            buffer += chunk.toString('utf8');
-          });
-        });
-
-        msg.once('end', async () => {
-          try {
-            const parsed = await simpleParser(buffer);
-            resolve({
-              id: emailId,
-              from: parsed.from?.text || '',
-              subject: parsed.subject || '',
-              text: parsed.text || '',
-              html: parsed.html || '',
-              date: parsed.date || new Date()
-            });
-          } catch (error) {
-            reject(error);
-          }
-        });
-      });
-
-      fetch.once('error', reject);
-    });
+  // Get emoji for transaction type
+  getTypeEmoji(type) {
+    const emojiMap = {
+      'bank': '🏦',
+      'utility_bill': '⚡',
+      'ecommerce_order': '🛍️',
+      'credit': '💳',
+      'debit': '💸',
+      'transfer': '↔️',
+      'unknown': '❓'
+    };
+    return emojiMap[type] || '💰';
   }
 
-  // Xử lý email từ ngân hàng
-  async processBankEmail(email) {
+  // Process with AI
+  async processWithAI(transaction) {
     try {
-      console.log(`📧 Processing email: ${email.subject}`);
-
-      // Phân tích email để trích xuất thông tin giao dịch
-      const transactionInfo = this.extractTransactionInfo(email);
+      // AI analysis of transaction
+      const aiAnalysis = await this.analyzeTransactionWithAI(transaction);
       
-      if (!transactionInfo) {
-        console.log('⚠️ Could not extract transaction info from email');
-        return;
-      }
-
-      // Lưu vào database
-      const bankTransaction = await this.saveBankTransaction(transactionInfo);
-      
-      // AI phân tích và tạo giao dịch
-      await this.processWithAI(bankTransaction);
-      
-      console.log(`✅ Processed transaction: ${transactionInfo.amount}đ`);
-      
-    } catch (error) {
-      console.error('❌ Error processing bank email:', error);
-    }
-  }
-
-  // Trích xuất thông tin giao dịch từ email
-  extractTransactionInfo(email) {
-    try {
-      const text = email.text || email.html || '';
-      
-      // Detect ngân hàng
-      const bankName = this.detectBank(email.from, email.subject, text);
-      
-      // Trích xuất thông tin giao dịch
-      const transactionInfo = {
-        bankName,
-        amount: this.extractAmount(text),
-        type: this.extractTransactionType(text),
-        description: this.extractDescription(text),
-        reference: this.extractReference(text),
-        date: email.date,
-        rawEmail: text
-      };
-
-      // Validate thông tin
-      if (!transactionInfo.amount || !transactionInfo.type) {
-        return null;
-      }
-
-      return transactionInfo;
-    } catch (error) {
-      console.error('❌ Error extracting transaction info:', error);
-      return null;
-    }
-  }
-
-  // Detect ngân hàng
-  detectBank(from, subject, text) {
-    const fromLower = from.toLowerCase();
-    const subjectLower = subject.toLowerCase();
-    const textLower = text.toLowerCase();
-
-    if (fromLower.includes('vcb') || textLower.includes('vietcombank')) return 'VCB';
-    if (fromLower.includes('tcb') || textLower.includes('techcombank')) return 'TCB';
-    if (fromLower.includes('tpb') || textLower.includes('tpbank')) return 'TPBank';
-    if (fromLower.includes('mbbank') || textLower.includes('mb bank')) return 'MBBank';
-    if (fromLower.includes('acb') || textLower.includes('acb bank')) return 'ACB';
-    if (fromLower.includes('techcombank')) return 'Techcombank';
-
-    return 'Unknown';
-  }
-
-  // Trích xuất số tiền
-  extractAmount(text) {
-    const amountRegex = /(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*(?:VND|đ|dong)/gi;
-    const matches = text.match(amountRegex);
-    
-    if (matches && matches.length > 0) {
-      const amount = matches[0].replace(/[^\d]/g, '');
-      return parseInt(amount);
-    }
-
-    // Tìm số tiền trong format khác
-    const numberRegex = /(\d{1,3}(?:,\d{3})*)/g;
-    const numbers = text.match(numberRegex);
-    
-    if (numbers && numbers.length > 0) {
-      // Lấy số lớn nhất (thường là số tiền giao dịch)
-      const amounts = numbers.map(n => parseInt(n.replace(/,/g, '')));
-      return Math.max(...amounts);
-    }
-
-    return null;
-  }
-
-  // Trích xuất loại giao dịch
-  extractTransactionType(text) {
-    const textLower = text.toLowerCase();
-    
-    if (textLower.includes('+') || textLower.includes('credit') || textLower.includes('nhan')) {
-      return 'credit';
-    }
-    
-    if (textLower.includes('-') || textLower.includes('debit') || textLower.includes('chi')) {
-      return 'debit';
-    }
-
-    return 'unknown';
-  }
-
-  // Trích xuất mô tả
-  extractDescription(text) {
-    // Tìm mô tả giao dịch
-    const descRegex = /(?:GD|Giao dich|Transaction):\s*(.+?)(?:\n|$)/i;
-    const match = text.match(descRegex);
-    
-    if (match) {
-      return match[1].trim();
-    }
-
-    // Tìm dòng có chứa thông tin giao dịch
-    const lines = text.split('\n');
-    for (const line of lines) {
-      if (line.includes('GD:') || line.includes('Giao dich:') || line.includes('Transaction:')) {
-        return line.replace(/.*?:/, '').trim();
-      }
-    }
-
-    return 'Bank transaction';
-  }
-
-  // Trích xuất mã tham chiếu
-  extractReference(text) {
-    const refRegex = /(?:Ref|Reference|Ma GD):\s*([A-Z0-9]+)/i;
-    const match = text.match(refRegex);
-    
-    if (match) {
-      return match[1];
-    }
-
-    // Tạo mã tham chiếu từ timestamp
-    return `BANK_${Date.now()}`;
-  }
-
-  // Lưu giao dịch ngân hàng vào database
-  async saveBankTransaction(transactionInfo) {
-    try {
-      const bankTransaction = await this.prisma.bankTransaction.create({
-        data: {
-          bankName: transactionInfo.bankName,
-          amount: transactionInfo.amount,
-          type: transactionInfo.type,
-          description: transactionInfo.description,
-          reference: transactionInfo.reference,
-          date: transactionInfo.date,
-          rawEmail: transactionInfo.rawEmail,
-          processed: false
-        }
-      });
-
-      console.log(`💾 Saved bank transaction: ${bankTransaction.id}`);
-      return bankTransaction;
-    } catch (error) {
-      console.error('❌ Error saving bank transaction:', error);
-      throw error;
-    }
-  }
-
-  // Xử lý với AI
-  async processWithAI(bankTransaction) {
-    try {
-      // AI phân tích giao dịch
-      const aiAnalysis = await this.analyzeTransactionWithAI(bankTransaction);
-      
-      // Cập nhật thông tin AI
+      // Update AI info
       await this.prisma.bankTransaction.update({
-        where: { id: bankTransaction.id },
+        where: { id: transaction.id },
         data: {
           aiProcessed: true,
           aiCategory: aiAnalysis.category,
@@ -456,118 +444,73 @@ class EmailService {
         }
       });
 
-      // Tạo giao dịch tương ứng
-      await this.createCorrespondingTransaction(bankTransaction, aiAnalysis);
+      // Create corresponding transaction
+      await this.createCorrespondingTransaction(transaction, aiAnalysis);
       
     } catch (error) {
       console.error('❌ Error processing with AI:', error);
     }
   }
 
-  // AI phân tích giao dịch
-  async analyzeTransactionWithAI(bankTransaction) {
+  // Analyze transaction with AI
+  async analyzeTransactionWithAI(transaction) {
     try {
-      // Sử dụng AI để phân tích mô tả giao dịch
-      const analysis = await this.analyzeDescriptionWithAI(bankTransaction.description);
+      // TODO: Implement AI analysis
+      // This is a placeholder that returns basic categorization
+      const description = transaction.description.toLowerCase();
       
-      return {
-        category: analysis.category,
-        confidence: analysis.confidence,
-        type: bankTransaction.type === 'credit' ? 'income' : 'expense'
-      };
+      if (description.includes('lương') || description.includes('salary')) {
+        return { category: 'Income', confidence: 0.9 };
+      }
+      
+      if (description.includes('điện') || description.includes('nước')) {
+        return { category: 'Utilities', confidence: 0.8 };
+      }
+      
+      if (description.includes('mua') || description.includes('shop')) {
+        return { category: 'Shopping', confidence: 0.7 };
+      }
+      
+      return { category: 'Other', confidence: 0.5 };
     } catch (error) {
       console.error('❌ Error in AI analysis:', error);
-      return {
-        category: 'Other',
-        confidence: 0.5,
-        type: bankTransaction.type === 'credit' ? 'income' : 'expense'
-      };
+      return { category: 'Unknown', confidence: 0 };
     }
   }
 
-  // AI phân tích mô tả
-  async analyzeDescriptionWithAI(description) {
-    // Đây là logic AI đơn giản, có thể thay thế bằng OpenAI API
-    const descriptionLower = description.toLowerCase();
-    
-    // Phân loại theo từ khóa
-    const categories = {
-      'Food': ['an', 'com', 'food', 'restaurant', 'cafe', 'coffee'],
-      'Transport': ['xe', 'taxi', 'grab', 'uber', 'transport', 'gas'],
-      'Shopping': ['mua', 'buy', 'shop', 'store', 'market'],
-      'Entertainment': ['game', 'movie', 'cinema', 'karaoke', 'entertainment'],
-      'Bills': ['bill', 'hoa don', 'electricity', 'water', 'internet'],
-      'Salary': ['luong', 'salary', 'wage', 'income'],
-      'Investment': ['investment', 'stock', 'fund', 'trading']
-    };
-
-    let bestCategory = 'Other';
-    let bestScore = 0;
-
-    for (const [category, keywords] of Object.entries(categories)) {
-      let score = 0;
-      for (const keyword of keywords) {
-        if (descriptionLower.includes(keyword)) {
-          score += 1;
-        }
-      }
-      
-      if (score > bestScore) {
-        bestScore = score;
-        bestCategory = category;
-      }
-    }
-
-    return {
-      category: bestCategory,
-      confidence: bestScore > 0 ? Math.min(bestScore / 3, 1) : 0.3
-    };
-  }
-
-  // Tạo giao dịch tương ứng
-  async createCorrespondingTransaction(bankTransaction, aiAnalysis) {
+  // Create corresponding transaction
+  async createCorrespondingTransaction(transaction, aiAnalysis) {
     try {
-      if (aiAnalysis.type === 'income') {
-        // Tạo income record
+      if (aiAnalysis.category === 'Income') {
         await this.prisma.income.create({
           data: {
-            userId: 'system', // Sẽ cập nhật sau khi có user mapping
-            source: aiAnalysis.category.toLowerCase(),
-            amount: bankTransaction.amount,
-            description: bankTransaction.description,
+            userId: transaction.userId,
+            source: 'bank',
+            amount: transaction.amount,
+            description: transaction.description,
             aiCategory: aiAnalysis.category,
             aiConfidence: aiAnalysis.confidence,
-            bankTransactionId: bankTransaction.id
+            bankTransactionId: transaction.id
           }
         });
       } else {
-        // Tạo expense record
         await this.prisma.expense.create({
           data: {
-            userId: 'system', // Sẽ cập nhật sau khi có user mapping
+            userId: transaction.userId,
             category: aiAnalysis.category,
-            amount: bankTransaction.amount,
-            note: bankTransaction.description,
+            amount: transaction.amount,
+            note: transaction.description,
             source: 'bank',
-            bankRef: bankTransaction.reference
+            bankRef: transaction.reference
           }
         });
       }
-
-      // Cập nhật trạng thái đã xử lý
-      await this.prisma.bankTransaction.update({
-        where: { id: bankTransaction.id },
-        data: { processed: true }
-      });
-
-      console.log(`✅ Created ${aiAnalysis.type} transaction from bank data`);
-      
     } catch (error) {
       console.error('❌ Error creating corresponding transaction:', error);
     }
   }
 
-  // Đánh dấu email đã đọc
+  // Mark email as read
   async markAsRead(emailId) {
     return new Promise((resolve, reject) => {
       this.imap.addFlags(emailId, '\\Seen', (err) => {
@@ -582,7 +525,7 @@ class EmailService {
     });
   }
 
-  // Lấy thống kê email
+  // Get email stats
   async getEmailStats() {
     try {
       const totalEmails = await this.prisma.bankTransaction.count();
@@ -606,18 +549,6 @@ class EmailService {
       console.error('❌ Error getting email stats:', error);
       return null;
     }
-  }
-
-  // Force check ngay lập tức
-  async forceCheck() {
-    console.log('🔍 Force checking for new emails...');
-    return await this.checkNewEmails();
-  }
-
-  // Cập nhật interval
-  updateInterval(newInterval) {
-    this.adaptiveInterval = Math.max(this.minInterval, Math.min(this.maxInterval, newInterval));
-    console.log(`📧 Updated polling interval to ${this.adaptiveInterval}ms`);
   }
 }
 

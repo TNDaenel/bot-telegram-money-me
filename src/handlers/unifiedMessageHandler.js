@@ -116,7 +116,11 @@ async function unifiedMessageHandler(ctx, next) {
     // 4. Kiểm tra xem có phải là yêu cầu mục tiêu không
     if (isGoalRequest(text)) {
       console.log(`🎯 Goal request from user ${userId}: ${text}`);
-      return await handleGoalRequest(ctx, text);
+      const goalResult = await handleGoalRequest(ctx, text);
+      if (goalResult !== null) {
+        return goalResult;
+      }
+      // Nếu handleGoalRequest trả về null, tiếp tục xử lý các logic khác
     }
     
     // 5. Kiểm tra xem có phải là JSON input cho mục tiêu không
@@ -1402,7 +1406,8 @@ function isGoalRequest(text) {
 }
 
 async function handleGoalRequest(ctx, text) {
-  return await goalHandler.handleGoalRequest(ctx, text);
+  const result = await goalHandler.handleGoalRequest(ctx, text);
+  return result; // Trả về kết quả từ goalHandler (có thể là null)
 }
 
 function isJSONGoalInput(text) {

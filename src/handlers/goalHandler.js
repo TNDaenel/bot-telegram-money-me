@@ -210,7 +210,7 @@ class GoalHandler {
       const result = await goalService.generateGoalReport(userId);
       
       if (result.goals.length === 0) {
-        const message = `🎯 **Chưa có mục tiêu tài chính nào!**\n\n`;
+        let message = `🎯 **Chưa có mục tiêu tài chính nào!**\n\n`;
         message += `💡 **Tạo mục tiêu ngay:**\n`;
         message += `• /taomuctieu <tên> - <danh mục> - <số tiền> - <ngày>\n`;
         message += `• /taomuctieutemplate - Tạo từ mẫu có sẵn`;
@@ -392,6 +392,30 @@ class GoalHandler {
       console.error('Error creating goals from JSON:', error);
       await bot.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
     }
+  }
+
+  // Hàm tổng hợp xử lý yêu cầu mục tiêu từ unifiedMessageHandler
+  async handleGoalRequest(ctx, text) {
+    const lower = text.toLowerCase();
+    
+    if (lower.includes('báo cáo') || lower.includes('xem') || lower.includes('report')) {
+      return this.handleGoalReport(ctx.message, ctx.telegram);
+    }
+    if (lower.includes('tạo') || lower.includes('create') || lower.includes('new')) {
+      return this.handleCreateGoal(ctx.message, ctx.telegram);
+    }
+    if (lower.includes('cập nhật') || lower.includes('update') || lower.includes('progress')) {
+      return this.handleUpdateGoalProgress(ctx.message, ctx.telegram);
+    }
+    if (lower.includes('cảnh báo') || lower.includes('warning') || lower.includes('alert')) {
+      return this.handleGoalWarnings(ctx.message, ctx.telegram);
+    }
+    if (lower.includes('template') || lower.includes('mẫu')) {
+      return this.handleCreateGoalsFromTemplate(ctx.message, ctx.telegram);
+    }
+    
+    // Không có hành động mặc định - trả về null để unifiedMessageHandler xử lý
+    return null;
   }
 }
 

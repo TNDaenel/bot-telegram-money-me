@@ -14,7 +14,7 @@ class BankService {
     };
   }
 
-  // Kết nối email service
+  // Connect email service
   async connect() {
     try {
       if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
@@ -30,7 +30,7 @@ class BankService {
     }
   }
 
-  // Bắt đầu monitoring với adaptive polling
+  // Start monitoring
   async startMonitoring() {
     try {
       if (this.isMonitoring) {
@@ -38,61 +38,73 @@ class BankService {
         return;
       }
 
-      const connected = await this.connect();
-      if (!connected) {
-        throw new Error('Failed to connect to email service');
+      // Connect if not connected
+      if (!this.emailService.isConnected) {
+        await this.connect();
       }
 
-      // Khởi tạo monitoring stats
-      this.monitoringStats.startTime = new Date();
-      this.monitoringStats.totalEmailsProcessed = 0;
-
-      await this.emailService.startMonitoring();
       this.isMonitoring = true;
-      console.log('🏦 Bank monitoring started with adaptive polling');
-      
-      // Bắt đầu monitoring stats
-      this.startMonitoringStats();
-      
+      this.monitoringStats.startTime = new Date();
+      console.log('🏦 Starting bank monitoring...');
+
+      // Start adaptive polling
+      this.startAdaptivePolling();
+
+      return true;
     } catch (error) {
       console.error('❌ Failed to start bank monitoring:', error);
-      throw error;
+      return false;
     }
   }
 
-  // Dừng monitoring
+  // Stop monitoring
   stopMonitoring() {
     this.isMonitoring = false;
-    this.emailService.stopMonitoring();
+    if (this.emailService) {
+      this.emailService.stopMonitoring();
+    }
     console.log('🏦 Bank monitoring stopped');
   }
 
-  // Bắt đầu monitoring stats
-  startMonitoringStats() {
-    setInterval(() => {
-      this.logMonitoringStats();
-    }, 60000); // Log stats mỗi phút
+  // Start adaptive polling
+  startAdaptivePolling() {
+    const poll = async () => {
+      if (!this.isMonitoring) return;
+
+      try {
+        const startTime = Date.now();
+        const hasNewEmails = await this.emailService.checkNewEmails();
+        const endTime = Date.now();
+
+        if (hasNewEmails) {
+          this.monitoringStats.totalEmailsProcessed++;
+          this.monitoringStats.lastEmailTime = new Date();
+          
+          // Update average processing time
+          const processingTime = endTime - startTime;
+          this.monitoringStats.averageProcessingTime = 
+            (this.monitoringStats.averageProcessingTime * (this.monitoringStats.totalEmailsProcessed - 1) + processingTime) 
+            / this.monitoringStats.totalEmailsProcessed;
+        }
+
+        // Schedule next check
+        setTimeout(poll, this.emailService.adaptiveInterval);
+      } catch (error) {
+        console.error('❌ Error in bank polling:', error);
+        // Retry after error delay
+        setTimeout(poll, 10000);
+      }
+    };
+
+    // Start polling
+    poll();
   }
 
-  // Log monitoring stats
-  logMonitoringStats() {
-    if (!this.isMonitoring) return;
-
-    const uptime = Date.now() - this.monitoringStats.startTime.getTime();
-    const uptimeMinutes = Math.floor(uptime / 60000);
-    
-    console.log(`📊 Monitoring Stats (${uptimeMinutes}min uptime):`);
-    console.log(`   📧 Total emails processed: ${this.monitoringStats.totalEmailsProcessed}`);
-    console.log(`   ⏱️ Average processing time: ${this.monitoringStats.averageProcessingTime.toFixed(2)}ms`);
-    console.log(`   📅 Last email time: ${this.monitoringStats.lastEmailTime || 'None'}`);
-    console.log(`   🔄 Current interval: ${this.emailService.adaptiveInterval}ms`);
-  }
-
-  // Force check email ngay lập tức
+  // Force check emails immediately
   async forceCheckEmails() {
     try {
       console.log('🔍 Force checking emails...');
-      const hasNewEmails = await this.emailService.forceCheck();
+      const hasNewEmails = await this.emailService.checkNewEmails();
       
       if (hasNewEmails) {
         this.monitoringStats.totalEmailsProcessed++;
@@ -106,122 +118,64 @@ class BankService {
     }
   }
 
-  // Cập nhật polling interval
-  updatePollingInterval(newInterval) {
-    this.emailService.updateInterval(newInterval);
-  }
-
-  // Lấy thống kê giao dịch ngân hàng
-  async getBankStats(userId = null) {
+  // Get monitoring status
+  async getMonitoringStatus() {
     try {
-      const whereClause = userId ? { userId } : {};
-      
-      const stats = await this.prisma.bankTransaction.groupBy({
-        by: ['bankName', 'type'],
-        where: whereClause,
-        _count: {
-          id: true
-        },
-        _sum: {
-          amount: true
-        }
-      });
-
-      const totalStats = await this.prisma.bankTransaction.aggregate({
-        where: whereClause,
-        _count: {
-          id: true
-        },
-        _sum: {
-          amount: true
-        }
-      });
+      const uptime = this.monitoringStats.startTime 
+        ? Math.floor((Date.now() - this.monitoringStats.startTime) / 1000)
+        : 0;
 
       const emailStats = await this.emailService.getEmailStats();
 
       return {
-        totalTransactions: totalStats._count.id,
-        totalAmount: totalStats._sum.amount || 0,
-        byBank: stats.reduce((acc, stat) => {
-          const key = `${stat.bankName}_${stat.type}`;
-          acc[key] = {
-            bank: stat.bankName,
-            type: stat.type,
-            count: stat._count.id,
-            amount: stat._sum.amount || 0
-          };
-          return acc;
-        }, {}),
-        emailStats: emailStats,
-        monitoringStats: this.monitoringStats
+        isRunning: this.isMonitoring,
+        uptime,
+        totalEmailsProcessed: this.monitoringStats.totalEmailsProcessed,
+        lastEmailTime: this.monitoringStats.lastEmailTime,
+        averageProcessingTime: this.monitoringStats.averageProcessingTime,
+        currentInterval: this.emailService.adaptiveInterval,
+        emailStats
       };
     } catch (error) {
-      console.error('❌ Error getting bank stats:', error);
+      console.error('❌ Error getting monitoring status:', error);
       return null;
     }
   }
 
-  // Lấy lịch sử giao dịch ngân hàng
-  async getBankTransactions(userId = null, limit = 10) {
+  // Get bank transactions
+  async getBankTransactions(userId, options = {}) {
     try {
-      const whereClause = userId ? { userId } : {};
-      
-      const transactions = await this.prisma.bankTransaction.findMany({
-        where: whereClause,
-        orderBy: { date: 'desc' },
-        take: limit,
-        include: {
-          expense: true,
-          incomes: true
-        }
-      });
+      const { skip = 0, take = 10, processed = null } = options;
 
-      return transactions.map(tx => ({
-        id: tx.id,
-        bankName: tx.bankName,
-        amount: tx.amount,
-        type: tx.type,
-        description: tx.description,
-        date: tx.date,
-        processed: tx.processed,
-        aiProcessed: tx.aiProcessed,
-        aiCategory: tx.aiCategory,
-        aiConfidence: tx.aiConfidence,
-        relatedExpense: tx.expense,
-        relatedIncome: tx.incomes[0] || null
-      }));
-    } catch (error) {
-      console.error('❌ Error getting bank transactions:', error);
-      return [];
-    }
-  }
-
-  // Lấy giao dịch theo ngân hàng
-  async getTransactionsByBank(bankName, userId = null) {
-    try {
-      const whereClause = {
-        bankName: bankName,
-        ...(userId && { userId })
-      };
+      const where = { userId };
+      if (processed !== null) {
+        where.processed = processed;
+      }
 
       const transactions = await this.prisma.bankTransaction.findMany({
-        where: whereClause,
+        where,
         orderBy: { date: 'desc' },
+        skip,
+        take,
         include: {
-          expense: true,
           incomes: true
         }
       });
 
       return transactions;
     } catch (error) {
-      console.error(`❌ Error getting transactions for ${bankName}:`, error);
+      console.error('❌ Error getting bank transactions:', error);
       return [];
     }
   }
 
-  // Xử lý giao dịch thủ công
-  async processTransactionManually(transactionId, userId, category, type) {
+  // Get pending transactions
+  async getPendingTransactions(userId) {
+    return this.getBankTransactions(userId, { processed: false });
+  }
+
+  // Process pending transaction
+  async processPendingTransaction(transactionId, userId, action) {
     try {
       const transaction = await this.prisma.bankTransaction.findUnique({
         where: { id: transactionId }
@@ -231,26 +185,45 @@ class BankService {
         throw new Error('Transaction not found');
       }
 
-      // Cập nhật thông tin AI
-      await this.prisma.bankTransaction.update({
-        where: { id: transactionId },
-        data: {
-          aiCategory: category,
-          aiConfidence: 1.0,
-          aiProcessed: true
-        }
-      });
+      if (transaction.processed) {
+        throw new Error('Transaction already processed');
+      }
 
-      // Tạo giao dịch tương ứng
-      if (type === 'income') {
+      // Process based on action
+      switch (action) {
+        case 'approve':
+          await this.approveTransaction(transaction, userId);
+          break;
+        case 'reject':
+          await this.rejectTransaction(transaction, userId);
+          break;
+        default:
+          throw new Error('Invalid action');
+      }
+
+      return true;
+    } catch (error) {
+      console.error('❌ Error processing pending transaction:', error);
+      throw error;
+    }
+  }
+
+  // Approve transaction
+  async approveTransaction(transaction, userId) {
+    try {
+      // Re-analyze with AI
+      const aiAnalysis = await this.emailService.analyzeTransactionWithAI(transaction);
+
+      // Create corresponding transaction
+      if (aiAnalysis.category === 'Income') {
         await this.prisma.income.create({
           data: {
             userId,
-            source: category.toLowerCase(),
+            source: 'bank',
             amount: transaction.amount,
             description: transaction.description,
-            aiCategory: category,
-            aiConfidence: 1.0,
+            aiCategory: aiAnalysis.category,
+            aiConfidence: aiAnalysis.confidence,
             bankTransactionId: transaction.id
           }
         });
@@ -258,7 +231,7 @@ class BankService {
         await this.prisma.expense.create({
           data: {
             userId,
-            category,
+            category: aiAnalysis.category,
             amount: transaction.amount,
             note: transaction.description,
             source: 'bank',
@@ -267,55 +240,42 @@ class BankService {
         });
       }
 
-      // Đánh dấu đã xử lý
+      // Mark as processed
       await this.prisma.bankTransaction.update({
-        where: { id: transactionId },
-        data: { processed: true }
+        where: { id: transaction.id },
+        data: {
+          processed: true,
+          userId
+        }
       });
 
-      console.log(`✅ Manually processed transaction ${transactionId}`);
-      return true;
+      console.log(`✅ Approved transaction ${transaction.id} for user ${userId}`);
     } catch (error) {
-      console.error('❌ Error processing transaction manually:', error);
-      return false;
+      console.error('❌ Error approving transaction:', error);
+      throw error;
     }
   }
 
-  // Lấy giao dịch chưa xử lý
-  async getPendingTransactions(userId = null) {
+  // Reject transaction
+  async rejectTransaction(transaction, userId) {
     try {
-      const whereClause = {
-        processed: false,
-        ...(userId && { userId })
-      };
-
-      const transactions = await this.prisma.bankTransaction.findMany({
-        where: whereClause,
-        orderBy: { date: 'desc' }
+      await this.prisma.bankTransaction.update({
+        where: { id: transaction.id },
+        data: {
+          processed: true,
+          userId,
+          rejected: true
+        }
       });
 
-      return transactions;
+      console.log(`❌ Rejected transaction ${transaction.id} for user ${userId}`);
     } catch (error) {
-      console.error('❌ Error getting pending transactions:', error);
-      return [];
+      console.error('❌ Error rejecting transaction:', error);
+      throw error;
     }
   }
 
-  // Xóa giao dịch
-  async deleteTransaction(transactionId) {
-    try {
-      await this.prisma.bankTransaction.delete({
-        where: { id: transactionId }
-      });
-      console.log(`✅ Deleted transaction ${transactionId}`);
-      return true;
-    } catch (error) {
-      console.error('❌ Error deleting transaction:', error);
-      return false;
-    }
-  }
-
-  // Cập nhật cấu hình email
+  // Update email config
   async updateEmailConfig(userId, email, bankName) {
     try {
       await this.prisma.userBankConfig.upsert({
@@ -341,25 +301,12 @@ class BankService {
     }
   }
 
-  // Lấy cấu hình email của user
-  async getUserEmailConfig(userId) {
-    try {
-      const config = await this.prisma.userBankConfig.findUnique({
-        where: { userId }
-      });
-      return config;
-    } catch (error) {
-      console.error('❌ Error getting user email config:', error);
-      return null;
-    }
-  }
-
-  // Test kết nối email
+  // Test email connection
   async testEmailConnection() {
     try {
       const connected = await this.connect();
       if (connected) {
-        this.emailService.stopMonitoring();
+        this.stopMonitoring();
         return {
           success: true,
           message: 'Email connection test successful'
@@ -378,87 +325,38 @@ class BankService {
     }
   }
 
-  // Lấy thống kê AI
-  async getAIStats() {
+  // Get bank stats
+  async getBankStats(userId) {
     try {
-      const aiStats = await this.prisma.bankTransaction.groupBy({
-        by: ['aiCategory'],
-        where: { aiProcessed: true },
-        _count: {
-          id: true
-        },
-        _avg: {
-          aiConfidence: true
-        }
-      });
+      const [
+        totalTransactions,
+        processedTransactions,
+        totalAmount,
+        lastTransaction
+      ] = await Promise.all([
+        this.prisma.bankTransaction.count({ where: { userId } }),
+        this.prisma.bankTransaction.count({ where: { userId, processed: true } }),
+        this.prisma.bankTransaction.aggregate({
+          where: { userId },
+          _sum: { amount: true }
+        }),
+        this.prisma.bankTransaction.findFirst({
+          where: { userId },
+          orderBy: { date: 'desc' }
+        })
+      ]);
 
-      return aiStats.map(stat => ({
-        category: stat.aiCategory,
-        count: stat._count.id,
-        avgConfidence: stat._avg.aiConfidence
-      }));
-    } catch (error) {
-      console.error('❌ Error getting AI stats:', error);
-      return [];
-    }
-  }
-
-  // Retrain AI với dữ liệu mới
-  async retrainAI() {
-    try {
-      // Lấy tất cả giao dịch đã xử lý
-      const processedTransactions = await this.prisma.bankTransaction.findMany({
-        where: { aiProcessed: true },
-        select: {
-          description: true,
-          aiCategory: true,
-          aiConfidence: true
-        }
-      });
-
-      // Cập nhật AI mapping
-      const categoryMapping = {};
-      processedTransactions.forEach(tx => {
-        if (!categoryMapping[tx.aiCategory]) {
-          categoryMapping[tx.aiCategory] = [];
-        }
-        categoryMapping[tx.aiCategory].push(tx.description);
-      });
-
-      console.log('🤖 AI retraining completed');
       return {
-        success: true,
-        categories: Object.keys(categoryMapping),
-        totalTransactions: processedTransactions.length
+        totalTransactions,
+        processedTransactions,
+        pendingTransactions: totalTransactions - processedTransactions,
+        totalAmount: totalAmount._sum.amount || 0,
+        lastTransactionDate: lastTransaction?.date
       };
     } catch (error) {
-      console.error('❌ Error retraining AI:', error);
-      return {
-        success: false,
-        error: error.message
-      };
+      console.error('❌ Error getting bank stats:', error);
+      return null;
     }
-  }
-
-  // Lấy monitoring status
-  getMonitoringStatus() {
-    return {
-      isMonitoring: this.isMonitoring,
-      startTime: this.monitoringStats.startTime,
-      uptime: this.isMonitoring ? Date.now() - this.monitoringStats.startTime.getTime() : 0,
-      totalEmailsProcessed: this.monitoringStats.totalEmailsProcessed,
-      lastEmailTime: this.monitoringStats.lastEmailTime,
-      currentInterval: this.emailService.adaptiveInterval
-    };
-  }
-
-  // Restart monitoring
-  async restartMonitoring() {
-    console.log('🔄 Restarting bank monitoring...');
-    this.stopMonitoring();
-    await new Promise(resolve => setTimeout(resolve, 2000)); // Đợi 2 giây
-    await this.startMonitoring();
-    console.log('✅ Bank monitoring restarted');
   }
 }
 

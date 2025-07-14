@@ -58,7 +58,8 @@ ${await t('WELCOME_DESCRIPTION')}
 
 ${await t('SELECT_FUNCTION')}`,
     {
-      reply_markup: mainMenuKeyboard
+      reply_markup: mainMenuKeyboard,
+      parse_mode: 'Markdown'
     }
   );
 });
@@ -280,9 +281,9 @@ ${await t('SELECT_FUNCTION')}`,
                   { text: await t('HISTORY'), callback_data: 'history' },
                   { text: await t('BANK_SETUP'), callback_data: 'bank_setup' }
                 ],
-                      [
-        { text: await t('HELP'), callback_data: 'help' }
-      ]
+                [
+                  { text: await t('HELP'), callback_data: 'help' }
+                ]
               ]
             },
             parse_mode: 'Markdown'
@@ -1059,7 +1060,17 @@ ${await helpT('HELP_FINANCE_TITLE')}
 ${await helpT('HELP_FINANCE_COMMANDS')}
 
 ${await helpT('HELP_BANK_TITLE')}
-${await helpT('HELP_BANK_COMMANDS')}`);
+${await helpT('HELP_BANK_COMMANDS')}
+
+${await helpT('HELP_LANGUAGE_TITLE')}
+${await helpT('HELP_LANGUAGE_COMMANDS')}`, {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: await helpT('BACK'), callback_data: 'main_menu' }]
+            ]
+          },
+          parse_mode: 'Markdown'
+        });
         break;
     }
 
