@@ -2,7 +2,6 @@
 
 > A smart, multilingual Telegram bot to track expenses, analyze income, and connect bank email alerts — all from your chat.
 
-![Expense Bot Banner](https://raw.githubusercontent.com/your-repo/expense-bot/main/assets/banner.png)
 
 ---
 
