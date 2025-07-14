@@ -111,4 +111,4 @@ pm2 startup
 
 ---
 
-> Made with ❤️ by [Daenel Tran](https://github.com/TNDaenel)
+> Made with ❤️ by [Tran Nguyen Daenel](https://github.com/TNDaenel)
