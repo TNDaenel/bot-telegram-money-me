@@ -1,0 +1,46 @@
+====================================
+🤖 EXPENSE BOT - READY TO START! 🤖
+====================================
+
+✅ TÍNH NĂNG MỚI: Mục tiêu Tài chính đã được triển khai!
+
+🚀 CÁCH KHỞI ĐỘNG:
+
+1. Mở Command Prompt/Terminal
+2. Chạy lệnh:
+   cd "g:\bot telegram\expense-bot"
+   npm run dev
+
+3. Hoặc double-click file: start-dev.bat
+
+📱 TEST TRONG TELEGRAM:
+
+1. Mở Telegram và tìm bot của bạn
+2. Gửi: /start
+3. Bạn sẽ thấy menu với các nút:
+
+   [📊 Thống kê] [📋 Lịch sử]
+   [💰 Thu nhập] [💳 Số dư]
+   [🏺 Hũ tiền]  [🎯 Mục tiêu]
+   [❓ Hướng dẫn]
+
+4. Click vào bất kỳ nút nào để test!
+
+🎯 TÍNH NĂNG MỤC TIÊU MỚI:
+
+• /muctieutemplate - Tạo 6 mục tiêu mẫu
+• /taomuctieu <tên> - <danh mục> - <số tiền> - <ngày>
+• /capnhatmuctieu <id> <số tiền> - Cập nhật tiến độ
+• /muctieu - Xem báo cáo mục tiêu
+
+🔧 KIỂM TRA TRƯỚC KHI CHẠY:
+   node dev-check.js
+
+📚 TÀI LIỆU:
+- QUICK_START.md - Hướng dẫn khởi động
+- TEST_MENU.md - Hướng dẫn test chi tiết
+- MENU_DESIGN.md - Thiết kế menu
+- BANK_SETUP.md - Thiết lập ngân hàng
+- GOAL_FEATURE_GUIDE.md - Hướng dẫn mục tiêu tài chính
+
+🎉 CHÚC BẠN SỬ DỤNG VUI VẺ!

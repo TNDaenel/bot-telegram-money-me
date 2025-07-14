@@ -1,0 +1,186 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Expense {
+  id        Int      @id @default(autoincrement())
+  userId    String
+  category  String
+  amount    Int
+  createdAt DateTime @default(now())
+  note      String?
+  source    String   @default("manual") // "manual", "bank", "email"
+  bankRef   String?  // Bank reference number
+  jarId     Int?     // Link to jar if money comes from jar
+  jar       Jar?     @relation(fields: [jarId], references: [id])
+}
+
+model Income {
+  id        Int      @id @default(autoincrement())
+  userId    String
+  source    String   // "salary", "bonus", "freelance", "investment", "other"
+  amount    Int
+  description String?
+  createdAt DateTime @default(now())
+  note      String?
+  // AI classification fields
+  aiCategory String? // AI predicted category
+  aiConfidence Float? // AI confidence score (0-1)
+  bankTransactionId Int? // Link to bank transaction
+  bankTransaction BankTransaction? @relation(fields: [bankTransactionId], references: [id])
+}
+
+model Jar {
+  id          Int      @id @default(autoincrement())
+  userId      String
+  name        String   // "Necessities", "Education", "Entertainment", "Emergency", etc.
+  description String?
+  targetAmount Int?    // Optional target amount
+  currentAmount Int    @default(0)
+  color       String   @default("#3498db") // Hex color for UI
+  icon        String   @default("💰") // Emoji icon
+  percentage  Float?   // Percentage allocation from income
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  expenses    Expense[]
+  transactions JarTransaction[]
+}
+
+model JarTransaction {
+  id        Int      @id @default(autoincrement())
+  userId    String
+  jarId     Int
+  type      String   // "deposit", "withdraw", "transfer"
+  amount    Int
+  description String?
+  fromJarId Int?     // For transfers
+  toJarId   Int?     // For transfers
+  createdAt DateTime @default(now())
+  jar       Jar      @relation(fields: [jarId], references: [id])
+}
+
+model BankTransaction {
+  id          Int      @id @default(autoincrement())
+  userId      String?  // Link to user if processed
+  bankName    String
+  amount      Int
+  type        String   // "debit", "credit"
+  description String
+  reference   String   @unique
+  date        DateTime
+  processed   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  expenseId   Int?     // Link to created expense
+  incomeId    Int?     // Link to created income
+  rawEmail    String?  // Store original email content
+  // AI processing fields
+  aiProcessed Boolean  @default(false)
+  aiCategory  String?  // AI predicted category
+  aiConfidence Float?  // AI confidence score
+  incomes     Income[] // One-to-many relationship
+}
+
+model UserBankConfig {
+  id       Int    @id @default(autoincrement())
+  userId   String @unique
+  email    String
+  bankName String
+  active   Boolean @default(true)
+  createdAt DateTime @default(now())
+}
+
+model UserBalance {
+  id        Int      @id @default(autoincrement())
+  userId    String   @unique
+  totalBalance Int   @default(0) // Current total balance
+  totalIncome  Int   @default(0) // All time income
+  totalExpense Int   @default(0) // All time expenses
+  updatedAt    DateTime @updatedAt
+  createdAt    DateTime @default(now())
+}
+
+// New models for AI income analysis
+model IncomeGoal {
+  id          Int      @id @default(autoincrement())
+  userId      String
+  name        String   // Goal name
+  targetAmount Int     // Target amount
+  currentAmount Int    @default(0)
+  period      String   // "monthly", "quarterly", "yearly"
+  startDate   DateTime
+  endDate     DateTime?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model AICategoryMapping {
+  id          Int      @id @default(autoincrement())
+  userId      String
+  keyword     String   // Bank transaction keyword
+  category    String   // Income category
+  confidence  Float    @default(1.0)
+  usageCount  Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@unique([userId, keyword])
+}
+
+model IncomeAnalysis {
+  id          Int      @id @default(autoincrement())
+  userId      String
+  period      String   // "monthly", "quarterly", "yearly"
+  periodStart DateTime
+  periodEnd   DateTime
+  totalIncome Int
+  sourceBreakdown Json  // JSON with source breakdown
+  growthRate  Float?   // Growth compared to previous period
+  insights    String?  // AI generated insights
+  recommendations String? // AI recommendations
+  createdAt   DateTime @default(now())
+  
+  @@unique([userId, period, periodStart])
+}
+
+// Financial Goals models
+model FinancialGoal {
+  id            Int      @id @default(autoincrement())
+  userId        String
+  goal          String   // Goal name
+  category      String   // Goal category
+  targetAmount  Int      // Target amount
+  currentAmount Int      @default(0)
+  targetDate    DateTime // Target completion date
+  priority      String   @default("medium") // "high", "medium", "low"
+  description   String?
+  progress      Float    @default(0) // Progress percentage
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  lastUpdated   DateTime @updatedAt
+  transactions  GoalTransaction[]
+}
+
+model GoalTransaction {
+  id          Int      @id @default(autoincrement())
+  userId      String
+  goalId      Int
+  amount      Int
+  type        String   // "deposit", "withdraw"
+  description String?
+  createdAt   DateTime @default(now())
+  goal        FinancialGoal @relation(fields: [goalId], references: [id])
+}
+
+model User {
+  id        String   @id
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  language  String   @default("vi")
+}

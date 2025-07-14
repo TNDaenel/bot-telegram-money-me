@@ -1,0 +1,16 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "run-minimal-bot",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"src\\index-minimal.js"
+			],
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		}
+	]
+}
