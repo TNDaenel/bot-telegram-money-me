@@ -1,94 +1,115 @@
-# 🚀 Expense Bot - Telegram Chatbot Quản Lý Chi Tiêu
+# 🚀 Expense Bot – Telegram Chatbot for Personal Finance Management
 
-## 1. Giới thiệu
-Expense Bot là chatbot Telegram giúp bạn quản lý chi tiêu, thu nhập, kết nối email ngân hàng, phân tích tài chính, đa ngôn ngữ... Mọi thao tác đều thực hiện trực tiếp trên giao diện chat Telegram, không cần chỉnh sửa code hay thao tác thủ công trên server.
+> A smart, multilingual Telegram bot to track expenses, analyze income, and connect bank email alerts — all from your chat.
+
+![Expense Bot Banner](https://raw.githubusercontent.com/your-repo/expense-bot/main/assets/banner.png)
 
 ---
 
-## 2. Cài đặt & Deploy
+## 📦 Features
 
-### Bước 1: Clone & Cài đặt
+- 💸 Add income/expenses using natural language
+- 📊 Real-time statistics and reports
+- 🏦 Connect email to read bank transaction alerts
+- 🌐 Multilingual interface (VN/EN/...)
+- 🔐 Each user stores their own API keys securely
+- ⚙️ Deployable to Railway, Render, VPS, etc.
+
+---
+
+## ⚙️ Setup & Deployment
+
+### 1️⃣ Clone & Install
 ```bash
-# Clone project
-https://github.com/your-repo/expense-bot.git
+git clone https://github.com/your-repo/expense-bot.git
 cd expense-bot
-
-# Cài đặt dependencies
 npm install
 ```
 
-### Bước 2: Cấu hình môi trường
-- Copy file `.env.example` thành `.env`:
-  ```bash
-  cp .env.example .env
-  ```
-- Điền các thông tin cần thiết vào file `.env` (token, database, email...)
+### 2️⃣ Configure Environment
+```bash
+cp .env.example .env
+# Edit .env with your own keys (Telegram, OpenAI, DB, Email, ...)
+```
 
-### Bước 3: Khởi tạo database
+### 3️⃣ Initialize Database (Prisma)
 ```bash
 npx prisma db push
 ```
 
-### Bước 4: Khởi động bot
+### 4️⃣ Start the Bot
 ```bash
-npm start
-# hoặc chế độ dev:
-npm run dev
+npm start       # Production mode
+npm run dev     # Development mode (nodemon)
 ```
 
-### Bước 5: (Tùy chọn) Deploy lên server/cloud
-- Có thể deploy lên VPS, Heroku, Railway, Render, v.v.
-- Đảm bảo biến môi trường `.env` được cấu hình đúng trên server.
+### 5️⃣ Optional: Deploy to Cloud
+- Railway (recommended)
+- Render, Fly.io, VPS, Heroku, etc.
+
+> Ensure `.env` variables are set properly in the cloud environment.
 
 ---
 
-## 3. Sử dụng bot trên Telegram
+## 💬 Using the Bot
 
-1. **Mở Telegram, tìm bot của bạn và nhấn `/start`.**
-2. **Tất cả thao tác đều thực hiện qua giao diện chat:**
-   - **Kết nối email ngân hàng:**
-     - Nhấn nút "🏦 Connect Email/Bank" → Nhập email → Chọn ngân hàng → Xác nhận thành công.
-   - **Thêm chi tiêu/thu nhập:**
-     - Nhập text tự nhiên, ví dụ: `Ăn sáng 50k`, `Lương tháng 7 15000000`.
-   - **Xem thống kê, lịch sử:**
-     - Nhấn các nút menu tương ứng.
-   - **Đổi ngôn ngữ:**
-     - Nhấn nút "🌐 Ngôn ngữ".
-   - **Hỗ trợ, hướng dẫn:**
-     - Nhấn nút "❓ Hướng dẫn".
+- 🔹 `/start` — Start and open main menu
+- 🔹 Send messages like:
+  - `Breakfast 50k`
+  - `Salary July 15tr`
+- 🔹 Use menu buttons:
+  - 📊 Statistics
+  - 🏦 Connect Email/Bank
+  - 🌐 Change Language
+  - ❓ Help
 
-3. **Không cần thao tác thủ công trên server sau khi deploy.**
+No manual editing or CLI access needed.
 
 ---
 
-## 4. Một số lệnh và thao tác nhanh
-- `/start` : Hiển thị menu chính
-- Nhập chi tiêu: `Ăn trưa 80k`, `Cafe 30000`
-- Nhập thu nhập: `Lương tháng 7 15000000`, `Thưởng 5tr`
-- Xem thống kê: Nhấn nút "📊 Thống kê"
-- Kết nối email ngân hàng: Nhấn nút "🏦 Connect Email/Bank"
-- Đổi ngôn ngữ: Nhấn nút "🌐 Ngôn ngữ"
+## 🛠 Commands Summary
+
+| Command                | Description                         |
+|------------------------|-------------------------------------|
+| `/start`              | Launch main menu                    |
+| `Lunch 80k`           | Log expense                         |
+| `Bonus 3tr`           | Log income                          |
+| `📊 Statistics`        | View charts                         |
+| `🏦 Connect Email`      | Link your bank email                |
+| `🌐 Language`          | Change bot language                 |
 
 ---
 
-## 5. Lưu ý khi deploy
-- **Không commit file `.env` lên git.**
-- **Đảm bảo DATABASE_URL trỏ đến PostgreSQL thật khi production.**
-- **Nếu dùng chức năng bank monitoring, cần cấu hình đúng email/app password hoặc OAuth2.**
-- **Có thể dùng process manager như pm2 để chạy bot ổn định:**
-  ```bash
-  npm install -g pm2
-  pm2 start src/index.js --name expense-bot
-  pm2 save
-  pm2 startup
-  ```
+## 📌 Deployment Tips
+
+- ❌ Never commit `.env` to Git
+- ✅ Point `DATABASE_URL` to a real PostgreSQL (use Railway/NeonDB)
+- ✉️ For email parsing, provide valid credentials or use Gmail OAuth
+- 🛡 Use `pm2` to keep your bot running in production:
+```bash
+npm install -g pm2
+pm2 start src/index.js --name expense-bot
+pm2 save
+pm2 startup
+```
 
 ---
 
-## 6. Hỗ trợ
-- Nếu gặp lỗi, kiểm tra log server hoặc gửi câu hỏi lên Github Issues.
-- Đọc thêm trong file `.env.example` để biết các biến môi trường cần thiết.
+## 📚 Resources
+
+- [Telegram Bot API Docs](https://core.telegram.org/bots/api)
+- [Prisma ORM](https://www.prisma.io/)
+- [Railway Hosting](https://railway.app)
+- [OpenAI API](https://platform.openai.com/docs)
 
 ---
 
-Chúc bạn sử dụng bot hiệu quả và quản lý chi tiêu thông minh! 🎉 
+## 🤝 Contributing & Support
+
+- Pull requests are welcome!
+- Found a bug? Open an [issue](https://github.com/your-repo/expense-bot/issues)
+- Need help? Reach out via Telegram or GitHub
+
+---
+
+> Made with ❤️ by [Daenel Tran](https://github.com/TNDaenel)
